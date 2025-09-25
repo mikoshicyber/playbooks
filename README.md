@@ -1,3 +1,7 @@
+## Requirements
+
+* Docker installed
+
 ## Examples
 
 *   `./run.sh playbook.yaml`
