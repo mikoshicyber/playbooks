@@ -404,12 +404,68 @@
         wait_for_children: "{{ item.pattern.wait_for_children | default(true) }}"
       loop: "{{ planned_items_pkg }}"
       register: pkg_results
-      when: (item.pattern.mode | default('exe')) in ['exe','msi']
+      when: 
+        - not ( item.pattern.mode == 'exe' and item.pattern.state == 'absent' )
+        - (item.pattern.mode | default('exe')) in ['exe','msi']
       ignore_errors: true
       failed_when: false
       loop_control:
         label: "{{ item.base }}"
       tags: [always]
+
+    - name: Отобрать EXE с state=absent
+      ansible.builtin.set_fact:
+        exe_absent_items: >-
+          {{
+            (planned_items_pkg | default([]))
+            | selectattr('pattern.state','defined') | selectattr('pattern.state','equalto','absent')
+            | selectattr('pattern.mode','defined') | selectattr('pattern.mode','equalto','exe')
+            | list
+          }}
+      tags: [always]
+
+    - name: DEBUG exe_absent_items
+      ansible.builtin.debug:
+        msg: "{{ {'exe_absent_items': exe_absent_items | map(attribute='base') | list} }}"
+      tags: [never, debug]
+
+    - name: Построить пары пакет×установленная запись для удаления
+      ansible.builtin.set_fact:
+        exe_uninstall_pairs: >-
+          {{
+            (exe_uninstall_pairs | default([])) + [
+              {'pkg': item.0, 'app': item.1}
+            ]
+          }}
+      loop: "{{ (exe_absent_items | default([])) | product(ansible_facts.installed_software | default([])) | list }}"
+      loop_control:
+        label: "{{ item.0.base }} <=?=> {{ item.1.name | default('') }}"
+      when:
+        - item.0.pattern.product_id is defined
+        - (item.1.product_id is not defined) or (item.1.product_id is none)
+        - (item.1.name | default('')) is regex(item.0.pattern.product_id, ignorecase=True)
+      tags: [always]
+
+    - name: DEBUG exe_uninstall_pairs
+      ansible.builtin.debug:
+        msg: "{{ exe_uninstall_pairs }}"
+      tags: [never, debug]
+
+    - name: Выполнить uninstall_string для найденных EXE
+      ansible.windows.win_shell: |
+        {{ item.app.uninstall_string }}
+      loop: "{{ exe_uninstall_pairs | default([]) }}"
+      loop_control:
+        label: "{{ item.app.name }}"
+      register: exe_uninstall_results
+      ignore_errors: true
+      failed_when: false
+      tags: [always]
+
+    - name: DEBUG exe_uninstall_results
+      ansible.builtin.debug:
+        msg: "{{ exe_uninstall_results }}"
+      tags: [never, debug]
 
     - name: Удалить исходники после успешной установки (только при локальном источнике)
       ansible.windows.win_file:
