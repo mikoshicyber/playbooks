@@ -1,0 +1,22 @@
+name: ansible-lint
+on:
+  push:
+    paths:
+      - '**/*.yml'
+      - '**/*.yaml'
+      - '**/ansible.cfg'
+      - '**/requirements.yml'
+  pull_request:
+
+jobs:
+  lint:
+    name: Ansible Lint
+    runs-on: quay.io/ansible/awx-ee:latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ansible/ansible-lint@v24.9.0
+        with:
+          args: ''
+          requirements_file: requirements.yml
+          setup_python: true
+          working_directory: .
