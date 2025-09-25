@@ -1,0 +1,817 @@
+---
+- name: Поиск, загрузка и установка файлов на Windows (с поддержкой mode=arc)
+  hosts: all
+  gather_facts: true
+
+  pre_tasks:
+    - name: Создать папку для фактов
+      ansible.windows.win_file:
+        path: C:\ProgramData\Ansible\facts.d
+        state: directory
+      tags: [always]
+
+    - name: Установить скрипт факта
+      ansible.windows.win_copy:
+        changed_then: false
+        dest: C:\ProgramData\Ansible\facts.d\installed_software.ps1
+        content: |
+          $keys = @(
+            'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall',
+            'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall',
+            'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall'
+          )
+          $apps = @()
+          foreach ($key in $keys) {
+            if (Test-Path $key) {
+              Get-ChildItem $key | ForEach-Object {
+                $meta = Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue
+                if ($meta -and $meta.DisplayName -and -not $meta.SystemComponent) {
+                  $prodid = if ($_.PSChildName -match '^\{[0-9A-Fa-f\-]+\}$') { $_.PSChildName } elseif ($meta.PSObject.Properties.Match('ProductID').Count -gt 0) { $meta.ProductID } else { $null }
+                  $silent = if ($meta.QuietUninstallString) { $meta.QuietUninstallString } else { $meta.UninstallString }
+                  $apps += [PSCustomObject]@{
+                    name = $meta.DisplayName
+                    version = if ($meta.PSObject.Properties.Match('DisplayVersion').Count -gt 0) { $meta.DisplayVersion } else { $null }
+                    uninstall_string = $silent
+                    product_id = $prodid
+                    registry_key = $_.PSPath
+                  }
+                }
+              }
+            }
+          }
+          $apps
+      tags: [always]
+
+    - name: Разрешить уведомления Windows Defender Security Center
+      ansible.windows.win_regedit:
+        path: HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender Security Center\Notifications
+        name: DisableNotifications
+        state: absent
+      tags: [always]
+
+    - name: Разрешить расширенные уведомления Windows Defender
+      ansible.windows.win_regedit:
+        path: HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender Security Center\Notifications
+        name: DisableEnhancedNotifications
+        state: absent
+      tags: [always]
+
+    - name: Разрешить тост-уведомления на уровне политики
+      ansible.windows.win_regedit:
+        path: HKLM:\SOFTWARE\Policies\Microsoft\Windows\CurrentVersion\PushNotifications
+        name: NoToastApplicationNotification
+        state: absent
+      tags: [always]
+
+    - name: Включить тост-уведомления для текущего пользователя
+      ansible.windows.win_regedit:
+        path: HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\PushNotifications
+        name: ToastEnabled
+        data: 1
+        type: dword
+        state: present
+      tags: [always]
+
+    - name: Сформировать список разрешённых приложений для CFA
+      ansible.builtin.set_fact:
+        defender_allow_apps:
+          - C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe
+          - C:\Windows\SysWOW64\WindowsPowerShell\v1.0\powershell.exe
+          - C:\Program Files\PowerShell\7\pwsh.exe
+      tags: [always]
+
+    - name: DEBUG defender_allow_apps
+      ansible.builtin.debug:
+        msg: "{{ defender_allow_apps }}"
+      tags: [never, debug]
+
+    - name: Разрешить приложения в Controlled Folder Access
+      ansible.windows.win_powershell:
+        script: |
+          $appsJson = @'
+          {{ defender_allow_apps | to_json }}
+          '@
+                $apps = $appsJson | ConvertFrom-Json
+                $pref = Get-MpPreference
+                $current = @($pref.ControlledFolderAccessAllowedApplications)
+                $toAdd = @()
+                foreach ($a in $apps) {
+                  if (Test-Path $a) {
+                    if ($current -notcontains $a) { $toAdd += $a }
+                  }
+                }
+                if ($toAdd.Count -gt 0) {
+                  Add-MpPreference -ControlledFolderAccessAllowedApplications $toAdd
+                  Write-Output "changed"
+                } else {
+                  Write-Output "ok"
+                }
+      register: cfa_allow
+      changed_when: "'changed' in (cfa_allow.output | default([]) | join(' '))"
+      tags: [always]
+
+    - name: DEBUG cfa_allow
+      ansible.builtin.debug:
+        msg: "{{ cfa_allow }}"
+      tags: [never, debug]
+
+    - name: Убедиться, что Controlled Folder Access включён
+      ansible.windows.win_powershell:
+        script: |
+          $pref = Get-MpPreference
+          if ($pref.EnableControlledFolderAccess -eq 0) {
+            Set-MpPreference -EnableControlledFolderAccess Enabled
+            Write-Output "changed"
+          } else {
+            Write-Output "ok"
+          }
+      register: cfa_enable
+      changed_when: "'changed' in (cfa_enable.output | default([]) | join(' '))"
+      tags: [always]
+
+    - name: DEBUG cfa_enable
+      ansible.builtin.debug:
+        msg: "{{ cfa_enable }}"
+      tags: [never, debug]
+
+  vars:
+    local_dir: "/source"
+    local_arc_tmp: "/tmp/ansible_arc"
+
+  tasks:
+    - name: Создать папку назначения на Windows
+      ansible.windows.win_file:
+        path: "{{ dest }}"
+        state: directory
+      tags: [always]
+
+    - name: Собрать факты, включая кастомные
+      ansible.windows.setup:
+        fact_path: C:\ProgramData\Ansible\facts.d
+      tags: [always]
+
+    - name: Найти доступные локальные файлы на контроллере
+      delegate_to: localhost
+      run_once: true
+      ansible.builtin.find:
+        paths: "{{ local_dir }}"
+        recurse: true
+        file_type: file
+        use_regex: true
+        patterns: "(?i).*\\.(exe|msi|zip|7z|rar|tgz|tar\\.gz)$"
+      register: local_files
+      tags: [always]
+
+    - name: Сохранить список путей как факт на localhost
+      delegate_to: localhost
+      delegate_facts: true
+      ansible.builtin.set_fact:
+        local_paths: "{{ (local_files.files | default([])) | map(attribute='path') | list }}"
+      tags: [always]
+
+    - name: DEBUG local_paths
+      ansible.builtin.debug:
+        msg: "{{ {'local_paths': hostvars['localhost'].local_paths | default([])} }}"
+      delegate_to: localhost
+      run_once: true
+      tags: [never, debug]
+
+    - name: Сформировать эффективный список паттернов (merge_variables + optional patterns)
+      ansible.builtin.set_fact:
+        patterns_effective: >-
+          {{
+            lookup(
+              'community.general.merge_variables',
+              'patterns__',
+              wantlist=True,
+              pattern_type='prefix',
+              list_merge='append',
+              recursive=True
+            ) | flatten
+            + (patterns | default([]))
+          }}
+      tags: [always]
+
+    - name: DEBUG patterns_effective
+      ansible.builtin.debug:
+        msg: "{{ {'patterns_effective': patterns_effective | default([])} }}"
+      tags: [never, debug]
+
+    - name: Построить пары паттерн×путь
+      ansible.builtin.set_fact:
+        pat_file_pairs: "{{ (patterns_effective | default([])) | product((hostvars['localhost'].local_paths | default([]))) | list }}"
+      tags: [always]
+
+    - name: DEBUG pat_file_pairs_count
+      ansible.builtin.debug:
+        msg: "{{ {'pat_file_pairs_count': (pat_file_pairs | length)} }}"
+      tags: [never, debug]
+
+    - name: Сформировать список кандидатов с версиями
+      ansible.builtin.set_fact:
+        exploded: "{{ (exploded|default([])) + [ {'pattern': item.0, 'file': item.1, 'base': (item.1 | basename), 'version': ((item.1 | basename) | regex_search('\\d+(?:\\.\\d+)+') | default('0', true)) } ] }}"
+      loop: "{{ pat_file_pairs | default([]) }}"
+      loop_control:
+        label: "{{ item.1 | basename }}"
+      when: item.1 | regex_search('(?i).*' ~ item.0.regex ~ '.*')
+      tags: [always]
+
+    - name: DEBUG exploded_progress
+      ansible.builtin.debug:
+        msg: "{{ {'exploded_len': (exploded | default([]) | length)} }}"
+      tags: [never, debug]
+
+    - name: Выбрать максимум по версии для каждого паттерна
+      ansible.builtin.set_fact:
+        best_map: "{{ (best_map|default({})) | combine({ (item.pattern.regex|string): item }, recursive=True) }}"
+      loop: "{{ exploded | default([]) }}"
+      loop_control:
+        label: "{{ item['base'] }}   --->   {{ item['version'] }}"
+      when: >
+        ((best_map|default({})).get(item.pattern.regex|string, none) is none) or
+        ((item.version|string) is version(((best_map|default({})).get(item.pattern.regex|string, {}).get('version','0')|string), '>'))
+      tags: [always]
+
+    - name: DEBUG best_map_keys
+      ansible.builtin.debug:
+        msg: "{{ {'best_map_keys': (best_map | default({}) | dict2items | map(attribute='key') | list)} }}"
+      tags: [never, debug]
+
+    - name: Итоговый список установок
+      ansible.builtin.set_fact:
+        install_items: "{{ (best_map|default({})) | dict2items | map(attribute='value') | list }}"
+      tags: [always]
+
+    - name: DEBUG install_items
+      ansible.builtin.debug:
+        msg: "{{ {'install_items': install_items | map(attribute='base') | list} }}"
+      tags: [never, debug]
+
+    - name: Найти маркеры _installed
+      ansible.windows.win_find:
+        paths: "{{ dest }}"
+        patterns: ["*_installed"]
+        recurse: false
+      register: installed_found
+      tags: [always]
+
+    - name: Сформировать installed_targets
+      ansible.builtin.set_fact:
+        installed_targets: >-
+          {{
+            (installed_found.files | default([]))
+            | map(attribute='path')
+            | map('regex_replace','_installed$','')
+            | list
+          }}
+      tags: [always]
+
+    - name: DEBUG installed_targets
+      ansible.builtin.debug:
+        msg: "{{ {'installed_targets': installed_targets | default([])} }}"
+      tags: [never, debug]
+
+    - name: Разобрать маркеры на продукт и версию
+      ansible.builtin.set_fact:
+        parsed_markers: >-
+          {{
+            (parsed_markers | default([])) + [
+              {
+                'name': (item.filename | default(item.path | basename)),
+                'path': item.path,
+                'key': (
+                  (item.filename | default(item.path | basename))
+                  | regex_replace('(?i)_installed$','')
+                  | regex_replace('\\.[^.\\s]+$','')
+                  | regex_replace('(?i)\\b(setup|installer|windows?|win|x86(?:-?64)?|x64|amd64|helppack(?:_ru)?|ru)\\b','')
+                  | regex_replace('[\\s_\\-]+',' ')
+                  | trim
+                  | lower
+                ),
+                'version': (
+                  ((item.filename | default(item.path | basename))
+                    | regex_replace('(?i)_installed$','')
+                    | regex_search('\\d+(?:[.,]\\d+)+|\\b\\d{8}\\b')
+                    | default('0', true)
+                    | regex_replace(',', '.')
+                  )
+                )
+              }
+            ]
+          }}
+      loop: "{{ installed_found.files | default([]) }}"
+      loop_control:
+        label: "{{ item.filename }}"
+      tags: [always]
+
+    - name: Выбрать самую новую версию по каждому продукту
+      ansible.builtin.set_fact:
+        best_map: "{{ (best_map|default({})) | combine({ item.key: item }, recursive=True) }}"
+      loop: "{{ parsed_markers | default([]) }}"
+      when: >
+        (best_map is not defined)
+        or (best_map.get(item.key) is not defined)
+        or (
+             (item.version is match('^\\d{8}$')
+               and (item.version | int) >
+                   ((best_map.get(item.key).version | default('0')) | int))
+             or
+             (item.version is not match('^\\d{8}$')
+               and ((item.version | string)
+                    is version((best_map.get(item.key).version | default('0') | string), '>')))
+          )
+      tags: [always]
+
+    - name: Инициализировать planned_items
+      ansible.builtin.set_fact:
+        planned_items: []
+      tags: [always]
+
+    - name: DEBUG planned_items_init
+      ansible.builtin.debug:
+        msg: "{{ {'planned_items': planned_items} }}"
+      tags: [never, debug]
+
+    - name: Отобрать элементы для работы
+      ansible.builtin.set_fact:
+        planned_items: "{{ (planned_items | default([])) + [ item ] }}"
+      loop: "{{ install_items | default([]) }}"
+      when:
+        - item.pattern.state | default('present') == 'absent'
+          or item.pattern.force | default(false)
+          or ((dest ~ '\\' ~ item.base) not in installed_targets)
+      tags: [always]
+
+    - name: DEBUG planned_items_after_filter
+      ansible.builtin.debug:
+        msg: "{{ {'planned_items': planned_items | map(attribute='base') | list} }}"
+      tags: [never, debug]
+
+    - name: Подготовить planned_items с путями к пакетам
+      ansible.builtin.set_fact:
+        planned_items_prepared: []
+      tags: [always]
+
+    - name: Построить planned_items_prepared
+      ansible.builtin.set_fact:
+        planned_items_prepared: >-
+          {{ (planned_items_prepared | default([])) + [
+               item | combine({
+                 'pkg_path': ((remote_source is defined and (remote_source|length > 0))
+                               | ternary(remote_source ~ '\\' ~ item.base,
+                                         dest ~ '\\' ~ item.base))
+               })
+             ] }}
+      loop: "{{ planned_items | default([]) }}"
+      loop_control:
+        label: "{{ item.base }}"
+      tags: [always]
+
+    - name: Сформировать списки по режимам
+      ansible.builtin.set_fact:
+        planned_items_arc: "{{ planned_items_prepared | selectattr('pattern.mode','defined') | selectattr('pattern.mode','equalto','arc') | list }}"
+        planned_items_pkg: "{{ (planned_items_prepared | selectattr('pattern.mode','defined') | selectattr('pattern.mode','in',['exe','msi']) | list) + (planned_items_prepared | rejectattr('pattern.mode','defined') | list) }}"
+      tags: [always]
+
+    - name: DEBUG planned_items_arc planned_items_pkg
+      ansible.builtin.debug:
+        msg: 
+          - "{{ {planned_items_arc }}"
+          - "{{ {planned_items_pkg }}"
+      tags: [never, debug]
+
+    - name: Копировать exe/msi на Windows (если источник локальный)
+      ansible.windows.win_copy:
+        src: "{{ item.file }}"
+        dest: "{{ dest }}\\{{ item.base }}"
+      loop: "{{ planned_items_pkg }}"
+      when:
+        - remote_source is not defined or remote_source|length == 0
+        - (item.pattern.mode | default('exe')) in ['exe','msi']
+        - (item.pattern.state | default('present')) != 'absent'
+      ignore_errors: true
+      failed_when: false
+      tags: [always]
+
+    - name: Установить состояние пакетов через win_package
+      ansible.windows.win_package:
+        path: "{{ item.pkg_path }}"
+        state: "{{ item.pattern.state | default('present') }}"
+        product_id: "{{ item.pattern.product_id | default(omit) }}"
+        arguments: "{{ (item.pattern.args | default([])) | join(' ') }}"
+        creates_path: "{{ item.pattern.creates_path | default(omit) }}"
+        expected_return_code: "{{ item.pattern.expected_return_code | default([0,3010]) }}"
+        wait_for_children: "{{ item.pattern.wait_for_children | default(true) }}"
+      loop: "{{ planned_items_pkg }}"
+      register: pkg_results
+      when: (item.pattern.mode | default('exe')) in ['exe','msi']
+      ignore_errors: true
+      failed_when: false
+      loop_control:
+        label: "{{ item.base }}"
+      tags: [always]
+
+    - name: Удалить исходники после успешной установки (только при локальном источнике)
+      ansible.windows.win_file:
+        path: "{{ dest }}\\{{ (item.item | default(item)).base }}"
+        state: absent
+      loop: "{{ pkg_results.results | default([]) }}"
+      when:
+        - remote_source is not defined or remote_source|length == 0
+        - pkg_results is defined
+        - (item.item.pattern.state | default('present')) != 'absent'
+        - item.failed is not defined or not item.failed
+        - (item.rc is defined and (item.rc in [0,3010]))
+      tags: [always]
+
+    - name: Сформировать списки по режимам
+      ansible.builtin.set_fact:
+        planned_items_arc: "{{ planned_items | selectattr('pattern.mode','defined') | selectattr('pattern.mode','equalto','arc') | list }}"
+        planned_items_pkg: "{{ (planned_items | selectattr('pattern.mode','defined') | selectattr('pattern.mode','in',['exe','msi']) | list) + (planned_items | rejectattr('pattern.mode','defined') | list) }}"
+      tags: [always]
+
+    - name: DEBUG planned_items_modes
+      ansible.builtin.debug:
+        msg: "{{ {'arc': planned_items_arc | map(attribute='base') | list, 'pkg': planned_items_pkg | map(attribute='base') | list} }}"
+      tags: [never, debug]
+
+    - name: Предварительно удалить маркер для state=absent
+      ansible.windows.win_file:
+        path: "{{ dest }}\\{{ item.base }}_installed"
+        state: absent
+      loop: "{{ planned_items | selectattr('pattern.state','defined') | selectattr('pattern.state','equalto','absent') | list }}"
+      loop_control:
+        label: "{{ item.base }}"
+      tags: [always]
+
+    - name: Показать тост со списком файлов
+      vars:
+        names: "{{ planned_items | map(attribute='base') | map('regex_replace','\\.[^.]+$','') | list }}"
+      community.windows.win_toast:
+        title: "Управление программами"
+        msg: "{{ names | join('\n') }}"
+      async: 5
+      poll: 0
+      when: planned_items | length > 0
+      ignore_errors: true
+      tags: [always]
+
+    - name: Выполнить pre-команды
+      ansible.windows.win_command: >-
+        {{ (item.pattern.pre is string) | ternary(item.pattern.pre, (item.pattern.pre | join(' && '))) }}
+      loop: "{{ planned_items | selectattr('pattern.pre','defined') | list }}"
+      loop_control:
+        label: "{{ item.pattern.pre }}"
+      ignore_errors: true
+      failed_when: false
+      tags: [always]
+
+    - name: Создать локальный tmp для архивов
+      delegate_to: localhost
+      ansible.builtin.file:
+        path: "{{ local_arc_tmp }}"
+        state: directory
+        mode: "0755"
+      when: planned_items_arc | length > 0
+      tags: [always]
+
+    - name: ARC создать каталог для распаковки
+      delegate_to: localhost
+      ansible.builtin.file:
+        path: "{{ local_arc_tmp }}/{{ inventory_hostname }}_{{ item.base | regex_replace('[^A-Za-z0-9_.-]','_') }}"
+        state: directory
+        mode: "0755"
+      loop: "{{ planned_items_arc }}"
+      loop_control:
+        label: "{{ item.base }}"
+      when: planned_items_arc | length > 0
+      tags: [always]
+
+    - name: ARC распаковать архив локально
+      delegate_to: localhost
+      ansible.builtin.unarchive:
+        src: "{{ item.file }}"
+        dest: "{{ local_arc_tmp }}/{{ inventory_hostname }}_{{ item.base | regex_replace('[^A-Za-z0-9_.-]','_') }}"
+        remote_src: false
+      loop: "{{ planned_items_arc }}"
+      loop_control:
+        label: "{{ item.base }}"
+      register: arc_unpacked
+      when: planned_items_arc | length > 0
+      tags: [always]
+
+    - name: ARC найти все файлы
+      delegate_to: localhost
+      vars:
+        arc_local_dir: "{{ local_arc_tmp }}/{{ inventory_hostname }}_{{ item.item.base | regex_replace('[^A-Za-z0-9_.-]','_') }}"
+      ansible.builtin.find:
+        paths: "{{ arc_local_dir }}"
+        recurse: true
+        file_type: file
+      loop: "{{ arc_unpacked.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item.base }}"
+      register: arc_all_files
+      when: planned_items_arc | length > 0
+      tags: [always]
+
+    - name: ARC подготовить список файлов к отправке
+      delegate_to: localhost
+      vars:
+        pi: "{{ item.item.item }}"
+        arc_local_dir: "{{ local_arc_tmp }}/{{ inventory_hostname }}_{{ pi.base | regex_replace('[^A-Za-z0-9_.-]','_') }}"
+        all_abs: "{{ (item.files | default([])) | map(attribute='path') | list }}"
+        all_rel: "{{ all_abs | map('regex_replace','^' ~ (arc_local_dir | regex_escape) ~ '[\\\\/]+','') | list }}"
+        has_files: "{{ ((pi.pattern.files | default([])) | length) > 0 }}"
+        rel_re: "{{ '(' ~ ((pi.pattern.files | default([])) | map('regex_escape') | join('|')) ~ ')' }}"
+        selected_rel: "{{ has_files | ternary(all_rel | select('match', rel_re) | list, all_rel) }}"
+      ansible.builtin.set_fact:
+        arc_transfers: "{{ (arc_transfers | default([]) ) + [ { 'base': pi.base, 'dest': (pi.pattern.dest | default(dest)), 'root': arc_local_dir, 'rel_files': selected_rel, 'has_files': has_files } ] }}"
+      loop: "{{ arc_all_files.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item.item.base }}"
+      when: planned_items_arc | length > 0
+      tags: [always]
+
+    - name: DEBUG arc_transfers_progress
+      ansible.builtin.debug:
+        msg: "{{ {'arc_transfers_len': (arc_transfers | default([]) | length)} }}"
+      tags: [never, debug]
+
+    - name: ARC создать базовые папки назначения
+      ansible.windows.win_file:
+        path: "{{ item.dest }}"
+        state: directory
+      loop: "{{ arc_transfers | default([]) }}"
+      loop_control:
+        label: "{{ item.base }}"
+      when: planned_items_arc | length > 0
+      tags: [always]
+
+    - name: ARC скопировать всё содержимое распаковки (files отсутствует/пуст)
+      ansible.windows.win_copy:
+        src: "{{ item.root }}/"
+        dest: "{{ item.dest }}\\"
+      loop: "{{ (arc_transfers | default([])) | selectattr('has_files','defined') | selectattr('has_files','equalto', false) | list }}"
+      loop_control:
+        label: "{{ item.base }} -> ALL"
+      register: arc_copy_results_full
+      when: planned_items_arc | length > 0
+      tags: [always]
+
+    - name: ARC копировать указанные файлы (files задан)
+      ansible.windows.win_copy:
+        src: "{{ item.0.root }}/{{ item.1 }}"
+        dest: "{{ item.0.dest }}\\{{ item.1 | basename }}"
+      loop: "{{ query('subelements', (arc_transfers | default([])) | selectattr('has_files','equalto', true) | list, 'rel_files', skip_missing=True) }}"
+      loop_control:
+        label: "{{ item.0.base }} -> {{ item.1 | basename }}"
+      register: arc_copy_results_files
+      when: planned_items_arc | length > 0
+      tags: [always]
+
+    - name: ARC собрать имена неудачных копирований
+      ansible.builtin.set_fact:
+        _arc_failed_full: >-
+          {{
+            (arc_copy_results_full.results | default([]))
+            | selectattr('failed','defined') | selectattr('failed')
+            | map(attribute='item.base') | list | unique
+          }}
+        _arc_failed_files: >-
+          {{
+            (arc_copy_results_files.results | default([]))
+            | selectattr('failed','defined') | selectattr('failed')
+            | map(attribute='item.0.base') | list | unique
+          }}
+      when: planned_items_arc | length > 0
+      tags: [always]
+
+    - name: DEBUG arc_failed
+      ansible.builtin.debug:
+        msg: "{{ {'_arc_failed_full': (_arc_failed_full | default([])), '_arc_failed_files': (_arc_failed_files | default([]))} }}"
+      tags: [never, debug]
+
+    - name: ARC вычислить множества (all/failed_any)
+      ansible.builtin.set_fact:
+        _arc_all: "{{ planned_items_arc | default([]) | map(attribute='base') | list | unique }}"
+        _arc_failed_any: "{{ ((_arc_failed_full | default([])) + (_arc_failed_files | default([]))) | unique }}"
+      when: planned_items_arc | length > 0
+      tags: [always]
+
+    - name: DEBUG arc_sets
+      ansible.builtin.debug:
+        msg: "{{ {'_arc_all': (_arc_all | default([])), '_arc_failed_any': (_arc_failed_any | default([]))} }}"
+      tags: [never, debug]
+
+    - name: ARC вычислить успешные элементы
+      ansible.builtin.set_fact:
+        _arc_success: "{{ (_arc_all | default([])) | difference(_arc_failed_any | default([])) }}"
+      when: planned_items_arc | length > 0
+      tags: [always]
+
+    - name: DEBUG arc_success
+      ansible.builtin.debug:
+        msg: "{{ {'_arc_success': (_arc_success | default([]))} }}"
+      tags: [never, debug]
+
+    - name: Гарантировать наличие _arc_success
+      ansible.builtin.set_fact:
+        _arc_success: "{{ _arc_success | default([]) }}"
+      tags: [always]
+
+    - name: DEBUG _arc_success_present
+      ansible.builtin.debug:
+        msg: "{{ {'_arc_success': (_arc_success | default([]))} }}"
+      tags: [never, debug]
+
+    - name: ARC создать _installed для успешных
+      ansible.windows.win_file:
+        path: "{{ dest }}\\{{ item }}_installed"
+        state: touch
+      loop: "{{ _arc_success | default([]) }}"
+      when: planned_items_arc | length > 0
+      tags: [always]
+
+    - name: Копировать exe/msi на Windows
+      ansible.windows.win_copy:
+        src: "{{ item.file }}"
+        dest: "{{ dest }}\\{{ item.base }}"
+      loop: "{{ planned_items_pkg }}"
+      when:
+        - (item.pattern.mode | default('exe')) in ['exe','msi']
+        - (item.pattern.state | default('present')) != 'absent'
+      ignore_errors: true
+      failed_when: false
+      tags: [always]
+
+    - name: Установить состояние пакетов через win_package
+      ansible.windows.win_package:
+        path: "{{ dest }}\\{{ item.base }}"
+        state: "{{ item.pattern.state | default('present') }}"
+        product_id: "{{ item.pattern.product_id | default(omit) }}"
+        arguments: "{{ (item.pattern.args | default([])) | join(' ') }}"
+        creates_path: "{{ item.pattern.creates_path | default(omit) }}"
+        expected_return_code: "{{ item.pattern.expected_return_code | default([0,3010]) }}"
+        wait_for_children: "{{ item.pattern.wait_for_children | default(true) }}"
+      loop: "{{ planned_items_pkg }}"
+      register: pkg_results
+      when: (item.pattern.mode | default('exe')) in ['exe','msi']
+      ignore_errors: true
+      failed_when: false
+      loop_control:
+        label: "{{ item.base }}"
+      tags: [always]
+
+    - name: Выполнить post-команды
+      ansible.windows.win_command: >-
+        {{ (item.pattern.post is string) | ternary(item.pattern.post, (item.pattern.post | join(' && '))) }}
+      loop: "{{ planned_items | selectattr('pattern.post','defined') | list }}"
+      loop_control:
+        label: "{{ item.pattern.post }}"
+      ignore_errors: true
+      failed_when: false
+      tags: [always]
+
+    - name: Создать _installed для успешных установок (exe/msi)
+      ansible.windows.win_file:
+        path: "{{ dest }}\\{{ (item.item | default(item)).base }}_installed"
+        state: touch
+      loop: "{{ pkg_results.results | default([]) }}"
+      when:
+        - pkg_results is defined
+        - (item.item.pattern.state | default('present')) != 'absent'
+        - item.failed is not defined or not item.failed
+        - (item.rc is defined and (item.rc in [0,3010]))
+      tags: [always]
+
+    - name: Удалить исходники после успешной установки
+      ansible.windows.win_file:
+        path: "{{ dest }}\\{{ (item.item | default(item)).base }}"
+        state: absent
+      loop: "{{ pkg_results.results | default([]) }}"
+      when:
+        - pkg_results is defined
+        - (item.item.pattern.state | default('present')) != 'absent'
+        - item.failed is not defined or not item.failed
+        - (item.rc is defined and (item.rc in [0,3010]))
+      tags: [always]
+
+    - name: Удалить маркер после успешного удаления
+      ansible.windows.win_file:
+        path: "{{ dest }}\\{{ (item.item | default(item)).base }}_installed"
+        state: absent
+      loop: "{{ pkg_results.results | default([]) }}"
+      when:
+        - pkg_results is defined
+        - (item.item.pattern.state | default('present')) == 'absent'
+        - item.failed is not defined or not item.failed
+        - (item.rc is defined and (item.rc in [0,3010]))
+      tags: [always]
+
+    - name: Удалить исходник после успешного удаления
+      ansible.windows.win_file:
+        path: "{{ dest }}\\{{ (item.item | default(item)).base }}"
+        state: absent
+      loop: "{{ pkg_results.results | default([]) }}"
+      when:
+        - pkg_results is defined
+        - (item.item.pattern.state | default('present')) == 'absent'
+        - item.failed is not defined or not item.failed
+        - (item.rc is defined and (item.rc in [0,3010]))
+      tags: [always]
+
+    - include_tasks: clear_markers.yml
+      tags: [always]
+
+    - name: Инициализировать success_items для хоста
+      ansible.builtin.set_fact:
+        success_items: []
+      tags: [always]
+
+    - name: DEBUG success_items_init
+      ansible.builtin.debug:
+        msg: "{{ {'success_items': success_items} }}"
+      tags: [never, debug]
+
+    - name: Собрать успешные установки пакетов
+      ansible.builtin.set_fact:
+        pkg_success: >-
+          {{
+            (pkg_results.results | default([]))
+            | selectattr('failed','defined') | rejectattr('failed')
+            | selectattr('rc','defined') | selectattr('rc','in',[0,3010])
+            | map(attribute='item') | map(attribute='base')
+            | list | unique
+          }}
+      when: pkg_results is defined
+      tags: [always]
+
+    - name: DEBUG pkg_success
+      ansible.builtin.debug:
+        msg: "{{ {'pkg_success': (pkg_success | default([]))} }}"
+      tags: [never, debug]
+
+    - name: Гарантировать наличие _arc_success
+      ansible.builtin.set_fact:
+        _arc_success: "{{ _arc_success | default([]) }}"
+      tags: [always]
+
+    - name: DEBUG _arc_success_present_final
+      ansible.builtin.debug:
+        msg: "{{ {'_arc_success': (_arc_success | default([]))} }}"
+      tags: [never, debug]
+
+    - name: Сформировать финальный список успешных объектов по хосту
+      ansible.builtin.set_fact:
+        success_items: "{{ ((pkg_success | default([])) + (_arc_success | default([]))) | unique }}"
+      tags: [always]
+
+    - name: DEBUG success_items_final
+      ansible.builtin.debug:
+        msg: "{{ {'success_items': success_items | default([])} }}"
+      tags: [never, debug]
+
+    - name: Посчитать количество успешных установок
+      delegate_to: localhost
+      run_once: true
+      ansible.builtin.set_fact:
+        success_total: >-
+          {{
+            groups['all']
+            | map('extract', hostvars, 'success_items')
+            | map('default', [])
+            | map('length')
+            | sum
+          }}
+      tags: [always]
+
+    - name: DEBUG success_total
+      ansible.builtin.debug:
+        msg: "{{ {'success_total': success_total | default(0)} }}"
+      delegate_to: localhost
+      run_once: true
+      tags: [never, debug]
+
+- name: "Отправим сообщение с хоста {{ ansible_play_hosts_all | first }}"
+  hosts: "{{ ansible_play_hosts_all | first }}"
+  gather_facts: false
+  vars:
+    success_total: >-
+      {{
+        groups['all']
+        | map('extract', hostvars, 'success_items')
+        | map('default', [])
+        | map('length')
+        | sum
+      }}
+  tasks:
+    - name: Пропустить, если нечего отправлять
+      meta: end_play
+      when: success_total | int == 0
+      tags: [always]
+
+    - name: Отправить Telegram-уведомление
+      ansible.builtin.include_tasks:
+        file: telegram.yaml
+      tags: [always]

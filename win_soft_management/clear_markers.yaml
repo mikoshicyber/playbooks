@@ -1,0 +1,70 @@
+- name: Собрать список имён маркеров (_installed)
+  ansible.builtin.set_fact:
+    marker_names: "{{ (installed_found.files | default([])) | map(attribute='filename') | list }}"
+  tags: [always]
+
+- name: DEBUG marker_names
+  ansible.builtin.debug:
+    var: marker_names
+  tags: [never, debug]
+
+- name: Список элементов, для которых нужны маркеры (install_items, state != absent)
+  ansible.builtin.set_fact:
+    items_for_markers: >-
+      {{
+        (install_items | default([]))
+        | rejectattr('pattern.state','defined')
+        | list
+        +
+        (
+          install_items | default([])
+          | selectattr('pattern.state','defined')
+          | selectattr('pattern.state','ne','absent')
+          | list
+        )
+      }}
+  tags: [always]
+
+- name: DEBUG items_for_markers
+  ansible.builtin.debug:
+    msg: "{{ items_for_markers | map(attribute='base') | list }}"
+  tags: [never, debug]
+
+- name: Инициализировать список маркеров к удалению
+  ansible.builtin.set_fact:
+    delete_markers: []
+  tags: [always]
+
+- name: Накопить маркеры к удалению по каждому элементу из install_items
+  ansible.builtin.set_fact:
+    delete_markers: "{{ (delete_markers | default([])) + to_delete }}"
+  vars:
+    file_regex: "{{ item.pattern.regex | default(item.base | regex_escape) }}"
+    pattern_installed: "{{ '(?i).*(' ~ file_regex ~ ').*_installed$' }}"
+    base_installed: "{{ item.base ~ '_installed' }}"
+    matched_in_family: "{{ marker_names | select('match', pattern_installed) | list }}"
+    to_delete: "{{ matched_in_family | difference([base_installed]) }}"
+  loop: "{{ items_for_markers | default([]) }}"
+  loop_control:
+    label: "{{ item.base }}"
+  when: marker_names | length > 0
+  tags: [always]
+
+- name: Уникализировать список на удаление
+  ansible.builtin.set_fact:
+    delete_markers: "{{ (delete_markers | default([])) | unique }}"
+  tags: [always]
+
+- name: DEBUG delete_markers
+  ansible.builtin.debug:
+    var: delete_markers
+  tags: [never, debug]
+
+- name: Удалить старые маркеры (_installed), оставив только свежие по плану
+  ansible.windows.win_file:
+    path: "{{ dest }}\\{{ item }}"
+    state: absent
+  loop: "{{ delete_markers | default([]) }}"
+  when: (delete_markers | default([]) | length) > 0
+  tags: [always]
+

@@ -1,0 +1,57 @@
+- name: TELEGRAM DEBUG success_total
+  ansible.builtin.debug:
+    msg: "{{ success_total }}"
+  tags: [never, debug]
+
+- name: TELEGRAM Сформировать текст для Telegram (HTML)
+  delegate_to: localhost
+  ansible.builtin.set_fact:
+    telegram_msg: |-
+      <b>Обновления завершены</b>
+      {% for h in groups['all'] if h != 'localhost' %}
+      {% set pkg = hostvars[h].pkg_results.results | default([]) %}
+      {% set ok = pkg | selectattr('rc','defined') | selectattr('rc','in',[0,3010]) | list %}
+      {% set removed = ok
+         | selectattr('item.pattern.state','defined')
+         | selectattr('item.pattern.state','equalto','absent')
+         | map(attribute='item') | map(attribute='base') | list | unique %}
+      {% set ok_names = ok | map(attribute='item') | map(attribute='base') | list | unique %}
+      {% set installed_pkg = ok_names | difference(removed) %}
+      {% set arc = hostvars[h]._arc_success | default([]) %}
+      {% set installed = (installed_pkg + arc) | unique %}
+
+      {% if (removed | length) > 0 or (installed | length) > 0 %}
+      <b>{{ h | regex_replace('&','&amp;') | regex_replace('<','&lt;') | regex_replace('>','&gt;') }}</b>:
+      {% if removed | length > 0 %}
+      <i>Удалено</i>:
+      {% for it in removed %}
+      • {{ it | regex_replace('&','&amp;') | regex_replace('<','&lt;') | regex_replace('>','&gt;') }}
+      {% endfor %}
+      {% endif %}
+      {% if installed | length > 0 %}
+      <i>Установлено/обновлено</i>:
+      {% for it in installed %}
+      • {{ it | regex_replace('&','&amp;') | regex_replace('<','&lt;') | regex_replace('>','&gt;') }}
+      {% endfor %}
+      {% endif %}
+      {% endif %}
+      {% endfor %}
+  tags: [always]
+
+- name: DEBUG telegram_msg
+  ansible.builtin.debug:
+    msg: "{{ telegram_msg }}"
+  tags: [never, debug]
+
+- name: TELEGRAM Отправить сообщение в Telegram
+  delegate_to: localhost
+  community.general.telegram:
+    token: "{{ telegram_token }}"
+    api_args:
+      chat_id: "{{ telegram_chat_id }}"
+      text: "{{ telegram_msg | trim }}"
+      parse_mode: "HTML"
+      disable_web_page_preview: true
+      disable_notification: true
+  when: (success_total | int) > 0
+  tags: [always]
