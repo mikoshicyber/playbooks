@@ -7,7 +7,7 @@ all:
     ansible_port: 5985
     ansible_user: Administrator
     ansible_password: "strongpassword"
-    remote_source: "\\\\192.168.88.70\\obmen\\autodownloads"
+    # remote_source: "\\\\192.168.88.70\\obmen\\autodownloads"
     dest: "C:\\temp\\deploy"
     telegram_token: ""
     telegram_chat_id: 

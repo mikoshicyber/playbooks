@@ -376,8 +376,8 @@
     - name: DEBUG planned_items_arc planned_items_pkg
       ansible.builtin.debug:
         msg: 
-          - "{{ {planned_items_arc }}"
-          - "{{ {planned_items_pkg }}"
+          - "{{ planned_items_arc }}"
+          - "{{ planned_items_pkg }}"
       tags: [never, debug]
 
     - name: Копировать exe/msi на Windows (если источник локальный)
@@ -423,17 +423,6 @@
         - item.failed is not defined or not item.failed
         - (item.rc is defined and (item.rc in [0,3010]))
       tags: [always]
-
-    - name: Сформировать списки по режимам
-      ansible.builtin.set_fact:
-        planned_items_arc: "{{ planned_items | selectattr('pattern.mode','defined') | selectattr('pattern.mode','equalto','arc') | list }}"
-        planned_items_pkg: "{{ (planned_items | selectattr('pattern.mode','defined') | selectattr('pattern.mode','in',['exe','msi']) | list) + (planned_items | rejectattr('pattern.mode','defined') | list) }}"
-      tags: [always]
-
-    - name: DEBUG planned_items_modes
-      ansible.builtin.debug:
-        msg: "{{ {'arc': planned_items_arc | map(attribute='base') | list, 'pkg': planned_items_pkg | map(attribute='base') | list} }}"
-      tags: [never, debug]
 
     - name: Предварительно удалить маркер для state=absent
       ansible.windows.win_file:
@@ -633,36 +622,6 @@
       when: planned_items_arc | length > 0
       tags: [always]
 
-    - name: Копировать exe/msi на Windows
-      ansible.windows.win_copy:
-        src: "{{ item.file }}"
-        dest: "{{ dest }}\\{{ item.base }}"
-      loop: "{{ planned_items_pkg }}"
-      when:
-        - (item.pattern.mode | default('exe')) in ['exe','msi']
-        - (item.pattern.state | default('present')) != 'absent'
-      ignore_errors: true
-      failed_when: false
-      tags: [always]
-
-    - name: Установить состояние пакетов через win_package
-      ansible.windows.win_package:
-        path: "{{ dest }}\\{{ item.base }}"
-        state: "{{ item.pattern.state | default('present') }}"
-        product_id: "{{ item.pattern.product_id | default(omit) }}"
-        arguments: "{{ (item.pattern.args | default([])) | join(' ') }}"
-        creates_path: "{{ item.pattern.creates_path | default(omit) }}"
-        expected_return_code: "{{ item.pattern.expected_return_code | default([0,3010]) }}"
-        wait_for_children: "{{ item.pattern.wait_for_children | default(true) }}"
-      loop: "{{ planned_items_pkg }}"
-      register: pkg_results
-      when: (item.pattern.mode | default('exe')) in ['exe','msi']
-      ignore_errors: true
-      failed_when: false
-      loop_control:
-        label: "{{ item.base }}"
-      tags: [always]
-
     - name: Выполнить post-команды
       ansible.windows.win_command: >-
         {{ (item.pattern.post is string) | ternary(item.pattern.post, (item.pattern.post | join(' && '))) }}
@@ -719,9 +678,6 @@
         - (item.item.pattern.state | default('present')) == 'absent'
         - item.failed is not defined or not item.failed
         - (item.rc is defined and (item.rc in [0,3010]))
-      tags: [always]
-
-    - include_tasks: clear_markers.yml
       tags: [always]
 
     - name: Инициализировать success_items для хоста
