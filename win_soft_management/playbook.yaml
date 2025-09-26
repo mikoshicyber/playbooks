@@ -402,24 +402,32 @@
 
             $raw = [regex]::Replace(
               $raw,
-              '(?i)(/x)\s*\{\s*(?<guid>[^}\s]+)\s*\}',
-              '/X "{${guid}}" /quiet /norestart'
+              '(?i)(msiexec(?:\.exe)?)\s+/i\s*\{\s*(?<guid>[0-9A-Fa-f\-]+)\s*\}',
+              '$1 /X "{${guid}}" /quiet /norestart'
             )
 
+            $cmdLine = $null
             $m = [regex]::Match($raw, '^"(?<exe>[^"]+)"(?:\s+(?<args>.*))?$')
+
             if ($m.Success) {
               $exe  = $m.Groups['exe'].Value
               $args = $m.Groups['args'].Value
               if ([string]::IsNullOrWhiteSpace($args)) {
+                $cmdLine = ('"{0}"' -f $exe)
+                Write-Output "RUN: $cmdLine"
                 $p = Start-Process -FilePath $exe -Wait -PassThru
               } else {
+                $cmdLine = ('"{0}" {1}' -f $exe, $args)
+                Write-Output "RUN: $cmdLine"
                 $p = Start-Process -FilePath $exe -ArgumentList $args -Wait -PassThru
               }
-              if ($p.ExitCode -is [int]) { exit $p.ExitCode } else { exit 0 }
             } else {
+              $cmdLine = $raw
+              Write-Output "RUN: $cmdLine"
               $p = Start-Process -FilePath 'cmd.exe' -ArgumentList @('/c', $raw) -Wait -PassThru
-              if ($p.ExitCode -is [int]) { exit $p.ExitCode } else { exit 0 }
             }
+
+            if ($p.ExitCode -is [int]) { exit $p.ExitCode } else { exit 0 }
       loop: "{{ uninstall_pairs | default([]) }}"
       loop_control:
         label: "{{ item.app.name }}"
