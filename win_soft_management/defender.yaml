@@ -1,0 +1,91 @@
+- name: Разрешить уведомления Windows Defender Security Center
+  ansible.windows.win_regedit:
+    path: HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender Security Center\Notifications
+    name: DisableNotifications
+    state: absent
+  tags: [always]
+
+- name: Разрешить расширенные уведомления Windows Defender
+  ansible.windows.win_regedit:
+    path: HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender Security Center\Notifications
+    name: DisableEnhancedNotifications
+    state: absent
+  tags: [always]
+
+- name: Разрешить тост-уведомления на уровне политики
+  ansible.windows.win_regedit:
+    path: HKLM:\SOFTWARE\Policies\Microsoft\Windows\CurrentVersion\PushNotifications
+    name: NoToastApplicationNotification
+    state: absent
+  tags: [always]
+
+- name: Включить тост-уведомления для текущего пользователя
+  ansible.windows.win_regedit:
+    path: HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\PushNotifications
+    name: ToastEnabled
+    data: 1
+    type: dword
+    state: present
+  tags: [always]
+
+- name: Сформировать список разрешённых приложений для CFA
+  ansible.builtin.set_fact:
+    defender_allow_apps:
+      - C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe
+      - C:\Windows\SysWOW64\WindowsPowerShell\v1.0\powershell.exe
+      - C:\Program Files\PowerShell\7\pwsh.exe
+  tags: [always]
+
+- name: DEBUG defender_allow_apps
+  ansible.builtin.debug:
+    msg: "{{ defender_allow_apps }}"
+  tags: [never, debug]
+
+- name: Разрешить приложения в Controlled Folder Access
+  ansible.windows.win_powershell:
+    script: |
+      $appsJson = @'
+      {{ defender_allow_apps | to_json }}
+      '@
+            $apps = $appsJson | ConvertFrom-Json
+            $pref = Get-MpPreference
+            $current = @($pref.ControlledFolderAccessAllowedApplications)
+            $toAdd = @()
+            foreach ($a in $apps) {
+              if (Test-Path $a) {
+                if ($current -notcontains $a) { $toAdd += $a }
+              }
+            }
+            if ($toAdd.Count -gt 0) {
+              Add-MpPreference -ControlledFolderAccessAllowedApplications $toAdd
+              Write-Output "changed"
+            } else {
+              Write-Output "ok"
+            }
+  register: cfa_allow
+  changed_when: "'changed' in (cfa_allow.output | default([]) | join(' '))"
+  tags: [always]
+
+- name: DEBUG cfa_allow
+  ansible.builtin.debug:
+    msg: "{{ cfa_allow }}"
+  tags: [never, debug]
+
+- name: Убедиться, что Controlled Folder Access включён
+  ansible.windows.win_powershell:
+    script: |
+      $pref = Get-MpPreference
+      if ($pref.EnableControlledFolderAccess -eq 0) {
+        Set-MpPreference -EnableControlledFolderAccess Enabled
+        Write-Output "changed"
+      } else {
+        Write-Output "ok"
+      }
+  register: cfa_enable
+  changed_when: "'changed' in (cfa_enable.output | default([]) | join(' '))"
+  tags: [always]
+
+- name: DEBUG cfa_enable
+  ansible.builtin.debug:
+    msg: "{{ cfa_enable }}"
+  tags: [never, debug]
