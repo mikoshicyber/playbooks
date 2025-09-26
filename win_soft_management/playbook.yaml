@@ -376,8 +376,8 @@
     - name: DEBUG planned_items_arc planned_items_pkg
       ansible.builtin.debug:
         msg: 
-          - "{{ planned_items_arc }}"
-          - "{{ planned_items_pkg }}"
+          - "1 {{ planned_items_arc }}"
+          - "2 {{ planned_items_pkg }}"
       tags: [never, debug]
 
     - name: Копировать exe/msi на Windows (если источник локальный)
@@ -405,7 +405,7 @@
       loop: "{{ planned_items_pkg }}"
       register: pkg_results
       when: 
-        - not ( item.pattern.mode == 'exe' and item.pattern.state == 'absent' )
+        - (item.pattern.state | default('present')) != 'absent'
         - (item.pattern.mode | default('exe')) in ['exe','msi']
       ignore_errors: true
       failed_when: false
@@ -413,59 +413,87 @@
         label: "{{ item.base }}"
       tags: [always]
 
-    - name: Отобрать EXE с state=absent
+    - name: Отобрать PKG с state=absent
       ansible.builtin.set_fact:
-        exe_absent_items: >-
+        absent_items: >-
           {{
             (planned_items_pkg | default([]))
             | selectattr('pattern.state','defined') | selectattr('pattern.state','equalto','absent')
-            | selectattr('pattern.mode','defined') | selectattr('pattern.mode','equalto','exe')
             | list
           }}
       tags: [always]
 
-    - name: DEBUG exe_absent_items
+    - name: DEBUG absent_items
       ansible.builtin.debug:
-        msg: "{{ {'exe_absent_items': exe_absent_items | map(attribute='base') | list} }}"
+        msg: "{{ absent_items }}"
       tags: [never, debug]
 
     - name: Построить пары пакет×установленная запись для удаления
       ansible.builtin.set_fact:
-        exe_uninstall_pairs: >-
+        uninstall_pairs: >-
           {{
-            (exe_uninstall_pairs | default([])) + [
+            (uninstall_pairs | default([])) + [
               {'pkg': item.0, 'app': item.1}
             ]
           }}
-      loop: "{{ (exe_absent_items | default([])) | product(ansible_facts.installed_software | default([])) | list }}"
+      loop: "{{ (absent_items | default([])) | product(ansible_facts.installed_software | default([])) | list }}"
       loop_control:
         label: "{{ item.0.base }} <=?=> {{ item.1.name | default('') }}"
       when:
         - item.0.pattern.product_id is defined
-        - (item.1.product_id is not defined) or (item.1.product_id is none)
+        # - (item.1.product_id is not defined) or (item.1.product_id is none)
         - (item.1.name | default('')) is regex(item.0.pattern.product_id, ignorecase=True)
       tags: [always]
 
-    - name: DEBUG exe_uninstall_pairs
+    - name: DEBUG uninstall_pairs
       ansible.builtin.debug:
-        msg: "{{ exe_uninstall_pairs }}"
+        msg: "{{ uninstall_pairs }}"
       tags: [never, debug]
+      when:
+        - uninstall_pairs is defined
 
-    - name: Выполнить uninstall_string для найденных EXE
+    - name: Выполнить uninstall_string через PowerShell
       ansible.windows.win_shell: |
+        $raw = @"
         {{ item.app.uninstall_string }}
-      loop: "{{ exe_uninstall_pairs | default([]) }}"
+        "@.Trim()
+
+            $raw = [regex]::Replace(
+              $raw,
+              '(?i)(/x)\s*\{\s*(?<guid>[^}\s]+)\s*\}',
+              '/X "{${guid}}" /quiet /norestart'
+            )
+
+            $m = [regex]::Match($raw, '^"(?<exe>[^"]+)"(?:\s+(?<args>.*))?$')
+            if ($m.Success) {
+              $exe  = $m.Groups['exe'].Value
+              $args = $m.Groups['args'].Value
+              if ([string]::IsNullOrWhiteSpace($args)) {
+                $p = Start-Process -FilePath $exe -Wait -PassThru
+              } else {
+                $p = Start-Process -FilePath $exe -ArgumentList $args -Wait -PassThru
+              }
+              if ($p.ExitCode -is [int]) { exit $p.ExitCode } else { exit 0 }
+            } else {
+              $p = Start-Process -FilePath 'cmd.exe' -ArgumentList @('/c', $raw) -Wait -PassThru
+              if ($p.ExitCode -is [int]) { exit $p.ExitCode } else { exit 0 }
+            }
+      loop: "{{ uninstall_pairs | default([]) }}"
       loop_control:
         label: "{{ item.app.name }}"
-      register: exe_uninstall_results
-      ignore_errors: true
-      failed_when: false
+      register: uninstall_results
+      changed_when: true
+      failed_when: uninstall_results.rc not in [0,3010]
       tags: [always]
+      when:
+        - uninstall_pairs is defined
 
-    - name: DEBUG exe_uninstall_results
+    - name: DEBUG uninstall_results
       ansible.builtin.debug:
-        msg: "{{ exe_uninstall_results }}"
+        msg: "{{ uninstall_results }}"
       tags: [never, debug]
+      when:
+        - uninstall_results is defined
 
     - name: Удалить исходники после успешной установки (только при локальном источнике)
       ansible.windows.win_file:
