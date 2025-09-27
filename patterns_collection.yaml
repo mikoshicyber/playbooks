@@ -4,7 +4,7 @@ patterns__all:
   - { regex: "audacity-win-[\\d.]+-64bit.exe", creates_path: 'C:\Program Files\Audacity\Audacity.exe', mode: "exe", args: ["/S","/verysilent","/NORESTART"], pre: ["taskkill /im audacity* /f"] }
   - { regex: "blender-.*-windows.amd64-release.msi", mode: "msi", args: ["/quiet", "/norestart"] }
   - { regex: "calibre-64bit-.*msi", mode: "msi", args: ["/quiet", "/norestart"] }
-  - { regex: "dbeaver", creates_path: 'C:\Users\{{ ansible_user }}\AppData\Local\dBeaver\dbeaver.exe', mode: "exe", args: ["/S", "/currentuser"] }
+  - { regex: "dbeaver", creates_path: "C:\\Users\\{{ ansible_user }}\\AppData\\Local\\dBeaver\\dbeaver.exe", mode: "exe", args: ["/S", "/currentuser"] }
   - { regex: "draw.io-.*-windows-installer.exe", creates_path: 'C:\Program Files\draw.io\draw.io.exe', mode: "exe", args: ["/S","/verysilent","/NORESTART"] }
   - { regex: "ffmpeg-master-latest-win64-gpl.zip", state: "present", mode: "arc", dest: 'C:\Program Files\', force: false, files: ["ffmpeg-master-latest-win64-gpl/bin/ffplay.exe","ffmpeg-master-latest-win64-gpl/bin/ffprobe.exe","ffmpeg-master-latest-win64-gpl/bin/ffmpeg.exe"]}
   - { regex: "Firefox", creates_path: 'C:\Program Files\Mozilla Firefox\firefox.exe', mode: "exe", args: ["/S","/verysilent","/NORESTART"] }
@@ -37,7 +37,7 @@ patterns__all:
   - { regex: "VeraCrypt_Setup_x64_[\\d.]+.msi", state: "present", product_id: "VeraCrypt.*", force: false, mode: "msi", args: ["/quiet", "ACCEPTLICENSE=YES", "/norestart"] }
   - { regex: "VirtualBox-.*-Win.exe", state: "present", product_id: "Oracle.*VirtualBox.*", creates_path: 'C:\Program Files\Oracle\VirtualBox\VirtualBox.exe', mode: "exe", args: ["--silent","--ignore-reboot"] }
   - { regex: "vlc-[\\d.]+-win64.exe", creates_path: 'C:\Program Files\VideoLAN\VLC\vlc.exe', mode: "exe", args: ["/S", "/verysilent"] }
-  - { regex: "VSCodeUserSetup", creates_path: 'C:\Users\{{ ansible_user }}\AppData\Local\Programs\Microsoft VS Code\Code.exe', mode: "exe", args: ["/VERYSILENT", "/CURRENTUSER", "/NORESTART", "/MERGETASKS=!runcode"], pre: ["taskkill /im Code.exe /f"] }
+  - { regex: "VSCodeUserSetup", creates_path: "C:\\Users\\{{ ansible_user }}\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe", mode: "exe", args: ["/VERYSILENT", "/CURRENTUSER", "/NORESTART", "/MERGETASKS=!runcode"], pre: ["taskkill /im Code.exe /f"] }
   - { regex: "windows_exporter-.*-amd64.msi", mode: "msi", args: [ '/quiet', '/norestart', 'ENABLED_COLLECTORS="[defaults],process,textfile"', 'TEXTFILE_DIRS="C:\metrics"'], pre: ["sc stop windows_exporter"] }
   - { regex: "WinSCP-.*-Setup", creates_path: 'C:\Program Files (x86)\WinSCP\WinSCP.exe', mode: "exe", args: ["/S", "/VERYSILENT", "/NORESTART"] }
   - { regex: "XnConvert-win-x64", creates_path: 'C:\Program Files\XnConvert\xnconvert.exe', mode: "exe", args: ["/S", "/verysilent"], force: false }
