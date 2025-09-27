@@ -1,0 +1,233 @@
+# task_arc.yaml
+# Обработка режима mode: arc — распаковка архивов и копирование содержимого на удалённый хост
+#
+# Ожидаемые переменные:
+# - planned_items_arc : список элементов planned_items с pattern.mode == 'arc'
+#   каждый элемент содержит:
+#     - base     : имя архива
+#     - file     : путь к архиву в local_dir
+#     - pkg_path : путь назначения архива на Windows
+#     - pattern  : словарь с полями
+#         - state : "present" или "absent"
+#         - dest  : каталог назначения на Windows (если не задан, используется dest)
+#         - files : список файлов (опционально). Если пусто или отсутствует — копируется всё содержимое
+# - dest           : базовый каталог назначения на Windows (по умолчанию)
+# - local_arc_tmp  : локальный каталог на контроллере для временной распаковки архивов
+#
+# Выходные факты:
+# - _arc_success : список base, для которых все файлы были успешно скопированы
+# - _arc_failed_full : список base архивов, которые полностью не удалось скопировать
+# - _arc_failed_files: список base архивов, где отдельные файлы не удалось скопировать
+# - _arc_all : список всех кандидатов для установки/копирования
+# - _arc_failed_any : список архивов, где хотя бы один шаг завершился с ошибкой
+
+- name: ARC выбрать объекты с state=absent
+  ansible.builtin.set_fact:
+    arc_absent_items: >-
+      {{
+        (planned_items_arc | default([]))
+        | selectattr('pattern.state','defined')
+        | selectattr('pattern.state','equalto','absent')
+        | list
+      }}
+  tags: [always]
+
+- name: ARC удалить указанные файлы (files задан)
+  ansible.windows.win_file:
+    path: "{{ (item.0.pattern.dest | default(dest)) }}\\{{ item.1 | basename }}"
+    state: absent
+  loop: "{{ query('subelements',
+                (arc_absent_items | selectattr('pattern.files','defined')
+                                  | selectattr('pattern.files','truthy') | list),
+                'pattern.files', skip_missing=True) }}"
+  loop_control:
+    label: "{{ item.0.base }} -> {{ item.1 | basename }}"
+  tags: [always]
+
+- name: ARC удалить каталог назначения (files не задан)
+  ansible.windows.win_file:
+    path: "{{ item.pattern.dest | default(dest) }}"
+    state: absent
+  loop: "{{ arc_absent_items | rejectattr('pattern.files','defined') | list
+                        + (arc_absent_items | selectattr('pattern.files','defined')
+                                            | rejectattr('pattern.files','truthy') | list) }}"
+  loop_control:
+    label: "{{ item.base }}"
+  tags: [always]
+
+- name: Создать локальный tmp для архивов
+  delegate_to: localhost
+  ansible.builtin.file:
+    path: "{{ local_arc_tmp }}"
+    state: directory
+    mode: "0755"
+  when:
+    - planned_items_arc | length > 0
+    - (planned_items_arc | selectattr('pattern.state','ne','absent') | list | length) > 0
+  tags: [always]
+
+- name: ARC создать каталог для распаковки
+  delegate_to: localhost
+  ansible.builtin.file:
+    path: "{{ local_arc_tmp }}/{{ inventory_hostname }}_{{ item.base | regex_replace('[^A-Za-z0-9_.-]','_') }}"
+    state: directory
+    mode: "0755"
+  loop: "{{ planned_items_arc }}"
+  loop_control:
+    label: "{{ item.base }}"
+  when:
+    - (item.pattern.state | default('present')) != 'absent'
+  tags: [always]
+
+- name: ARC распаковать архив локально
+  delegate_to: localhost
+  ansible.builtin.unarchive:
+    src: "{{ item.file }}"
+    dest: "{{ local_arc_tmp }}/{{ inventory_hostname }}_{{ item.base | regex_replace('[^A-Za-z0-9_.-]','_') }}"
+    remote_src: false
+  loop: "{{ planned_items_arc }}"
+  loop_control:
+    label: "{{ item.base }}"
+  register: arc_unpacked
+  when:
+    - (item.pattern.state | default('present')) != 'absent'
+  tags: [always]
+
+- name: ARC найти все файлы
+  delegate_to: localhost
+  vars:
+    arc_local_dir: "{{ local_arc_tmp }}/{{ inventory_hostname }}_{{ item.item.base | regex_replace('[^A-Za-z0-9_.-]','_') }}"
+  ansible.builtin.find:
+    paths: "{{ arc_local_dir }}"
+    recurse: true
+    file_type: file
+  loop: "{{ arc_unpacked.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.base }}"
+  register: arc_all_files
+  when:
+    - arc_unpacked is defined
+  tags: [always]
+
+- name: ARC подготовить список файлов к отправке
+  delegate_to: localhost
+  vars:
+    pi: "{{ item.item.item }}"
+    arc_local_dir: "{{ local_arc_tmp }}/{{ inventory_hostname }}_{{ pi.base | regex_replace('[^A-Za-z0-9_.-]','_') }}"
+    all_abs: "{{ (item.files | default([])) | map(attribute='path') | list }}"
+    all_rel: "{{ all_abs | map('regex_replace','^' ~ (arc_local_dir | regex_escape) ~ '[\\\\/]+','') | list }}"
+    has_files: "{{ ((pi.pattern.files | default([])) | length) > 0 }}"
+    rel_re: "{{ '(' ~ ((pi.pattern.files | default([])) | map('regex_escape') | join('|')) ~ ')' }}"
+    selected_rel: "{{ has_files | ternary(all_rel | select('match', rel_re) | list, all_rel) }}"
+  ansible.builtin.set_fact:
+    arc_transfers: "{{ (arc_transfers | default([]) ) + [ { 'base': pi.base, 'dest': (pi.pattern.dest | default(dest)), 'root': arc_local_dir, 'rel_files': selected_rel, 'has_files': has_files } ] }}"
+  loop: "{{ arc_all_files.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.item.base }}"
+  when:
+    - arc_all_files is defined
+  tags: [always]
+
+- name: DEBUG arc_transfers_progress
+  ansible.builtin.debug:
+    msg: "{{ {'arc_transfers_len': (arc_transfers | default([]) | length)} }}"
+  tags: [never, debug]
+
+- name: ARC создать базовые папки назначения
+  ansible.windows.win_file:
+    path: "{{ item.dest }}"
+    state: directory
+  loop: "{{ arc_transfers | default([]) }}"
+  loop_control:
+    label: "{{ item.base }}"
+  when:
+    - (arc_transfers | default([]) | length) > 0
+  tags: [always]
+
+- name: ARC скопировать всё содержимое распаковки (files отсутствует/пуст)
+  ansible.windows.win_copy:
+    src: "{{ item.root }}/"
+    dest: "{{ item.dest }}\\"
+  loop: "{{ (arc_transfers | default([])) | selectattr('has_files','defined') | selectattr('has_files','equalto', false) | list }}"
+  loop_control:
+    label: "{{ item.base }} -> ALL"
+  register: arc_copy_results_full
+  when:
+    - (arc_transfers | default([]) | length) > 0
+  tags: [always]
+
+- name: ARC копировать указанные файлы (files задан)
+  ansible.windows.win_copy:
+    src: "{{ item.0.root }}/{{ item.1 }}"
+    dest: "{{ item.0.dest }}\\{{ item.1 | basename }}"
+  loop: "{{ query('subelements', (arc_transfers | default([])) | selectattr('has_files','equalto', true) | list, 'rel_files', skip_missing=True) }}"
+  loop_control:
+    label: "{{ item.0.base }} -> {{ item.1 | basename }}"
+  register: arc_copy_results_files
+  when:
+    - (arc_transfers | default([]) | length) > 0
+  tags: [always]
+
+- name: ARC собрать имена неудачных копирований
+  ansible.builtin.set_fact:
+    _arc_failed_full: >-
+      {{
+        (arc_copy_results_full.results | default([]))
+        | selectattr('failed','defined') | selectattr('failed')
+        | map(attribute='item.base') | list | unique
+      }}
+    _arc_failed_files: >-
+      {{
+        (arc_copy_results_files.results | default([]))
+        | selectattr('failed','defined') | selectattr('failed')
+        | map(attribute='item.0.base') | list | unique
+      }}
+  when: (arc_transfers | default([]) | length) > 0
+  tags: [always]
+
+- name: DEBUG arc_failed
+  ansible.builtin.debug:
+    msg: "{{ {'_arc_failed_full': (_arc_failed_full | default([])), '_arc_failed_files': (_arc_failed_files | default([]))} }}"
+  tags: [never, debug]
+
+- name: ARC вычислить множества (all/failed_any)
+  ansible.builtin.set_fact:
+    _arc_all: "{{ planned_items_arc | default([]) | selectattr('pattern.state','undefined') | map(attribute='base') | list | unique
+                 + (planned_items_arc | selectattr('pattern.state','defined') | rejectattr('pattern.state','equalto','absent') | map(attribute='base') | list | unique) }}"
+    _arc_failed_any: "{{ ((_arc_failed_full | default([])) + (_arc_failed_files | default([]))) | unique }}"
+  when: (arc_transfers | default([]) | length) > 0
+  tags: [always]
+
+- name: DEBUG arc_sets
+  ansible.builtin.debug:
+    msg: "{{ {'_arc_all': (_arc_all | default([])), '_arc_failed_any': (_arc_failed_any | default([]))} }}"
+  tags: [never, debug]
+
+- name: ARC вычислить успешные элементы
+  ansible.builtin.set_fact:
+    _arc_success: "{{ (_arc_all | default([])) | difference(_arc_failed_any | default([])) }}"
+  when: (arc_transfers | default([]) | length) > 0
+  tags: [always]
+
+- name: DEBUG arc_success
+  ansible.builtin.debug:
+    msg: "{{ {'_arc_success': (_arc_success | default([]))} }}"
+  tags: [never, debug]
+
+- name: Гарантировать наличие _arc_success
+  ansible.builtin.set_fact:
+    _arc_success: "{{ _arc_success | default([]) }}"
+  tags: [always]
+
+- name: DEBUG _arc_success_present
+  ansible.builtin.debug:
+    msg: "{{ {'_arc_success': (_arc_success | default([]))} }}"
+  tags: [never, debug]
+
+- name: ARC создать _installed для успешных
+  ansible.windows.win_file:
+    path: "{{ dest }}\\{{ item }}_installed"
+    state: touch
+  loop: "{{ _arc_success | default([]) }}"
+  when: (_arc_success | default([]) | length) > 0
+  tags: [always]

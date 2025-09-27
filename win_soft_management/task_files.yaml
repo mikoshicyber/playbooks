@@ -1,0 +1,172 @@
+# task_files.yaml
+# Обработка режима mode: files — копирование/удаление перечисленных файлов из local_dir с шаблонизацией
+#
+# Ожидаемые переменные (в инвентаре/vars перед include этого файла):
+# - planned_items_files : список элементов planned_items с pattern.mode == 'files'.
+#   Элемент имеет поля:
+#     - base     : логическое имя набора (обычно совпадает с одним из файлов)
+#     - file     : абсолютный путь исходного файла в local_dir (не используется напрямую, но может присутствовать)
+#     - pattern  : словарь параметров:
+#         - files : список относительных путей (относительно local_dir), которые нужно скопировать/удалить
+#         - dest  : (опц.) базовый каталог назначения на Windows; если не задан — используется глобальная переменная dest
+#         - state : (опц.) "present" или "absent"; по умолчанию — "present"
+# - local_dir : базовый локальный каталог на контроллере, из которого берутся шаблоны (template src)
+# - dest      : базовый каталог назначения на хосте Windows по умолчанию
+#
+# Поведение:
+# - Для state=present — каждый файл из pattern.files копируется модулем template (рендер Jinja2) в dest/pattern.dest,
+#   с созданием промежуточных подкаталогов.
+# - Для state=absent — перечисленные файлы удаляются из dest/pattern.dest; маркер <base>_installed также удаляется.
+#
+# Выходные факты (после include этого файла):
+# - _files_success : список item.base, для которых все указанные файлы были успешно скопированы (state=present)
+#
+# Примечания:
+# - Пути в pattern.files задаются в Unix-стиле или Windows-стиле; внутри задачи они нормализуются к Windows (\\).
+# - Для корректной работы требуется доступ к local_dir на контроллере (delegate_to по умолчанию не используется, т.к. template работает локально на контроллере).
+
+
+- name: Гарантировать наличие planned_items_files
+  ansible.builtin.set_fact:
+    planned_items_files: "{{ planned_items_files | default([]) }}"
+  tags: [always]
+
+- name: Разделить files по состояниям (present/absent)
+  ansible.builtin.set_fact:
+    files_present_items: >-
+      {{
+        (planned_items_files | default([]))
+        | selectattr('pattern.files','defined')
+        | selectattr('pattern.files','truthy')
+        | rejectattr('pattern.state','defined')
+        | list
+        +
+        (
+          (planned_items_files | default([]))
+          | selectattr('pattern.files','defined')
+          | selectattr('pattern.files','truthy')
+          | selectattr('pattern.state','defined')
+          | rejectattr('pattern.state','equalto','absent')
+          | list
+        )
+      }}
+    files_absent_items: >-
+      {{
+        (planned_items_files | default([]))
+        | selectattr('pattern.files','defined')
+        | selectattr('pattern.files','truthy')
+        | selectattr('pattern.state','defined')
+        | selectattr('pattern.state','equalto','absent')
+        | list
+      }}
+  tags: [always]
+
+- name: DEBUG files_present_items / files_absent_items
+  ansible.builtin.debug:
+    msg:
+      present: "{{ files_present_items | map(attribute='base') | list }}"
+      absent:  "{{ files_absent_items  | map(attribute='base') | list }}"
+  tags: [never, debug]
+
+# ---------- PRESENT: копирование шаблонов ----------
+
+- name: Создать базовые папки назначения для mode=files (present)
+  ansible.windows.win_file:
+    path: "{{ item.pattern.dest | default(dest) }}"
+    state: directory
+  loop: "{{ files_present_items }}"
+  loop_control:
+    label: "{{ item.base }}"
+  when: files_present_items | length > 0
+  tags: [always]
+
+- name: Создать подкаталоги для каждого файла (present)
+  vars:
+    _dest_root: "{{ item.0.pattern.dest | default(dest) }}"
+    _rel_path:  "{{ (item.1 | regex_replace('^[/\\\\]+','')) }}"
+    _rel_dir:   "{{ (_rel_path | dirname) | regex_replace('/', '\\\\') }}"
+  ansible.windows.win_file:
+    path: "{{ _dest_root }}\\{{ _rel_dir }}"
+    state: directory
+  loop: "{{ query('subelements', files_present_items, 'pattern.files', skip_missing=True) }}"
+  loop_control:
+    label: "{{ item.0.base }} -> dir({{ _rel_dir }})"
+  when:
+    - files_present_items | length > 0
+    - (_rel_dir | length) > 0
+    - _rel_dir not in ['.', '\\', '/']
+  tags: [always]
+
+- name: Копировать файлы как шаблоны (present)
+  vars:
+    _dest_root: "{{ item.0.pattern.dest | default(dest) }}"
+    _rel_path:  "{{ (item.1 | regex_replace('^[/\\\\]+','')) }}"
+    _rel_win:   "{{ _rel_path | regex_replace('/', '\\\\') }}"
+  ansible.builtin.template:
+    src:  "{{ local_dir }}/{{ _rel_path }}"
+    dest: "{{ _dest_root }}\\{{ _rel_win }}"
+    # можно добавить mode/owner/group при необходимости
+  loop: "{{ query('subelements', files_present_items, 'pattern.files', skip_missing=True) }}"
+  loop_control:
+    label: "{{ item.0.base }} -> {{ _rel_path }}"
+  register: files_template_results
+  when: files_present_items | length > 0
+  tags: [always]
+
+- name: Собрать статусы копирования по base (present)
+  vars:
+    _failed_bases: >-
+      {{
+        (files_template_results.results | default([]))
+        | selectattr('failed','defined') | selectattr('failed')
+        | map(attribute='item.0.base')
+        | list | unique
+      }}
+    _all_bases: >-
+      {{
+        (files_present_items | default([]))
+        | map(attribute='base') | list | unique
+      }}
+  ansible.builtin.set_fact:
+    _files_success: "{{ _all_bases | difference(_failed_bases) }}"
+  when: files_present_items | length > 0
+  tags: [always]
+
+- name: DEBUG _files_success
+  ansible.builtin.debug:
+    msg: "{{ {'_files_success': (_files_success | default([]))} }}"
+  tags: [never, debug]
+
+- name: Создать _installed для успешных (mode=files, present)
+  ansible.windows.win_file:
+    path: "{{ dest }}\\{{ item }}_installed"
+    state: touch
+  loop: "{{ _files_success | default([]) }}"
+  when: files_present_items | length > 0
+  tags: [always]
+
+# ---------- ABSENT: удаление перечисленных файлов ----------
+
+- name: Удалить указанные файлы (mode=files, absent)
+  vars:
+    _dest_root: "{{ item.0.pattern.dest | default(dest) }}"
+    _rel_path:  "{{ (item.1 | regex_replace('^[/\\\\]+','')) }}"
+    _rel_win:   "{{ _rel_path | regex_replace('/', '\\\\') }}"
+  ansible.windows.win_file:
+    path: "{{ _dest_root }}\\{{ _rel_win }}"
+    state: absent
+  loop: "{{ query('subelements', files_absent_items, 'pattern.files', skip_missing=True) }}"
+  loop_control:
+    label: "{{ item.0.base }} -X-> {{ _rel_path }}"
+  when: files_absent_items | length > 0
+  tags: [always]
+
+- name: Удалить маркер для файловых наборов со state=absent (mode=files)
+  ansible.windows.win_file:
+    path: "{{ dest }}\\{{ item.base }}_installed"
+    state: absent
+  loop: "{{ files_absent_items }}"
+  loop_control:
+    label: "{{ item.base }}"
+  when: files_absent_items | length > 0
+  tags: [always]
