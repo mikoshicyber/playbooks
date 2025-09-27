@@ -1,0 +1,44 @@
+patterns__all:
+  - { regex: "7z[\\\\d.]+-x64.exe", creates_path: 'C:\\Program Files\\7-Zip\\7zFM.exe', mode: "exe", args: ["/S"] }
+  - { regex: "AIMP", mode: "exe", args: ['/AUTO="C:\\Users\\{{ ansible_user }}\\Desktop\\AIMP"', "/VERYSILENT"] }
+  - { regex: "audacity-win-[\\\\d.]+-64bit.exe", creates_path: 'C:\\Program Files\\Audacity\\Audacity.exe', mode: "exe", args: ["/S","/verysilent","/NORESTART"], pre: ["taskkill /im audacity* /f"] }
+  - { regex: "blender-.*-windows.amd64-release.msi", mode: "msi", args: ["/quiet", "/norestart"] }
+  - { regex: "calibre-64bit-.*\\\\.msi", mode: "msi", args: ["/quiet", "/norestart"] }
+  - { regex: "dbeaver", creates_path: 'C:\\Users\\{{ ansible_user }}\\AppData\\Local\\DBeaver\\dbeaver.exe', mode: "exe", args: ["/S", "/currentuser"] }
+  - { regex: "draw.io-.*-windows-installer.exe", creates_path: 'C:\\Program Files\\draw.io\\draw.io.exe', mode: "exe", args: ["/S","/verysilent","/NORESTART"] }
+  - { regex: "ffmpeg-master-latest-win64-gpl.zip", state: "present", mode: "arc", dest: 'C:\\Program Files\\', force: false, files: ["ffmpeg-master-latest-win64-gpl/bin/ffplay.exe","ffmpeg-master-latest-win64-gpl/bin/ffprobe.exe","ffmpeg-master-latest-win64-gpl/bin/ffmpeg.exe"]}
+  - { regex: "Firefox", creates_path: 'C:\\Program Files\\Mozilla Firefox\\firefox.exe', mode: "exe", args: ["/S","/verysilent","/NORESTART"] }
+  - { regex: "Freelens-.*-windows-amd64.msi", mode: "msi", args: ["/quiet", "/norestart"], pre: ["taskkill /im Freelens* /f"] }
+  - { regex: "gimp", creates_path: 'C:\\Program Files\\GIMP 2\\bin\\gegl.exe', mode: "exe", args: ["/S", "/verysilent", "/currentuser"] }
+  - { regex: "HeidiSQL", creates_path: 'C:\\Program Files\\HeidiSQL\\heidisql.exe', mode: "exe", args: ["/SP", "/FORCECLOSEAPPLICATIONS", "/VERYSILENT", "/ALLUSERS", "/NORESTART"] }
+  - { regex: "hide.reg", force: true, mode: "files", dest: 'C:\\temp', files: ["hide.reg"], post: ['regedit /s C:\\temp\\hide.reg', 'sc stop tvnserver', 'sc start tvnserver'] }
+  - { regex: "inkscape-.+-x64.exe", creates_path: 'C:\\Program Files\\Inkscape\\bin\\inkscape.exe', mode: "exe", args: ["/S", '/D="C:\\Program Files\\Inkscape"'], pre: ['"C:\\Program Files\\Inkscape\\Uninstall.exe" /S']  }
+  - { regex: "keepass", creates_path: 'C:\\Program Files (x86)\\KeePass Password Safe 2\\KeePass.exe', mode: "exe", args: ["/S", "/verysilent"], force: false, pre: ['taskkill /im "*keepass*" /f'] }
+  - { regex: "keepass", mode: "exe", args: ["/S", "/verysilent"], force: false, pre: ['taskkill /im keepass*.exe /f'] }
+  - { regex: "K-Lite_Codec_Pack_.+_Mega.exe", creates_path: 'C:\\Program Files (x86)\\K-Lite Codec Pack\\MPC-HC64\\mpc-hc64.exe', mode: "exe", args: ["/S", "/VERYSILENT", "/NORESTART"] }
+  - { regex: "krita-x64-[\\\\d.-]+-setup.exe", state: "present", product_id: "Krita.*", creates_path: 'C:\\Program Files\\Krita (x64)\\bin\\krita.exe', force: false, mode: "exe", args: ["/S", "/verysilent"] }
+  - { regex: "libreoffice.*help", mode: "msi", args: ["/quiet", "/norestart"] }
+  - { regex: "libreoffice.*_Win_x86-64.msi", mode: "msi", args: ["/quiet", "/norestart"], pre: ["taskkill /im soffice.bin /f","taskkill /im soffice.exe /f"] }
+  - { regex: "mumble_client-[\\\\d.]+.x64.msi", mode: "msi", args: ["/quiet", "/norestart"] }
+  - { regex: "Nextcloud-.*-x64.msi", mode: "msi", args: ["/quiet", "/norestart"] }
+  - { regex: "npp.+Installer.x64.exe", creates_path: 'C:\\Program Files\\Notepad++\\notepad++.exe', mode: "exe", args: ["/S", "/VERYSILENT", "/NORESTART"] }
+  - { regex: "OBS-Studio-[\\\\d.-]+-Windows-x64-Installer.exe", state: "present", product_id: "OBS Studio", force: false, mode: "exe", args: ["/S", "/verysilent"] }
+  - { regex: "openconnect", creates_path: 'C:\\Program Files\\OpenConnect-GUI\\openconnect-gui.exe', mode: "exe", args: ["/S", "/verysilent"], force: false }
+  - { regex: "openvpn", mode: "msi", args: ["/quiet", "/norestart"], force: false }
+  - { regex: "putty-64bit-[\\\\d.]+-installer.msi", mode: "msi", args: ["/quiet", "/norestart"] }
+  - { regex: "python-[\\\\d.]+-amd64.exe", force: false, creates_path: 'C:\\Program Files\\Python\\python.exe', mode: "exe", args: ["/quiet", "InstallAllUsers=1", "PrependPath=1", "Include_pip=1", "AssociateFiles=1", "Include_doc=0", "Shortcuts=0", 'TargetDir="C:\\Program Files\\Python"'] }
+  - { regex: "ShareX", creates_path: 'C:\\Program Files\\ShareX\\ShareX.exe', mode: "exe", args: ["/VERYSILENT", "/NORESTART", "/NORUN"], pre: ['taskkill /im ShareX.exe /f'] }
+  - { regex: "Thunderbird", creates_path: 'C:\\Program Files\\Mozilla Thunderbird\\thunderbird.exe', mode: "exe", args: ["/S","/verysilent","/NORESTART"], pre: "taskkill /f /im thunderbird.exe" }
+  - { regex: "tightvnc-[\\\\d.]+-gpl-setup-64bit.msi", state: "present", force: false, mode: "msi", product_id: "tightvnc.*", args: ["/quiet", "/norestart", "ADDLOCAL=Server"] }
+  - { regex: "tor-browser", mode: "exe", args: ["/S", "/verysilent"] }
+  - { regex: "tor-expert-bundle-windows-x86_64-[\\\\d.-]+.tar.gz", mode: "arc", dest: "C:\\\\Program Files\\\\TorBundle", force: false, pre: [ "taskkill /im tor.exe /f || echo not found", 'rd /q /s "C:\\Program Files\\TorBundle"' ] }
+  - { regex: "torrc", force: false, mode: "files", dest: 'C:\\Program Files\\TorBundle\\tor', files: ["torrc","tor_install.bat"], post: ['"C:\\Program Files\\TorBundle\\tor\\tor_install.bat"'] }
+  - { regex: "transgui-[\\\\d.]+-setup_64bit.exe", mode: "exe", product_id: "Transmission.+GUI.*", args: ["/S", "/verysilent"], force: false , creates_path: 'C:\\Program Files\\Transmission Remote GUI\\transgui.exe'}
+  - { regex: "VeraCrypt_Setup_x64_[\\\\d.]+.msi", state: "present", product_id: "VeraCrypt.*", force: false, mode: "msi", args: ["/quiet", "ACCEPTLICENSE=YES", "/norestart"] }
+  - { regex: "VirtualBox-.*-Win.exe", state: "present", product_id: "Oracle.*VirtualBox.*", creates_path: 'C:\\Program Files\\Oracle\\VirtualBox\\VirtualBox.exe', mode: "exe", args: ["--silent","--ignore-reboot"] }
+  - { regex: "vlc-[\\\\d.]+-win64.exe", creates_path: 'C:\\Program Files\\VideoLAN\\VLC\\vlc.exe', mode: "exe", args: ["/S", "/verysilent"] }
+  - { regex: "VSCodeUserSetup", creates_path: 'C:\\Users\\{{ ansible_user }}\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe', mode: "exe", args: ["/VERYSILENT", "/CURRENTUSER", "/NORESTART", "/MERGETASKS=!runcode"], pre: ["taskkill /im Code.exe /f"] }
+  - { regex: "windows_exporter-.*-amd64.msi", mode: "msi", args: [ '/quiet', '/norestart', 'ENABLED_COLLECTORS="[defaults],process,textfile"', 'TEXTFILE_DIRS="C:\\metrics"'], pre: ["sc stop windows_exporter"] }
+  - { regex: "WinSCP-.*-Setup", creates_path: 'C:\\Program Files (x86)\\WinSCP\\WinSCP.exe', mode: "exe", args: ["/S", "/VERYSILENT", "/NORESTART"] }
+  - { regex: "XnConvert-win-x64", creates_path: 'C:\\Program Files\\XnConvert\\xnconvert.exe', mode: "exe", args: ["/S", "/verysilent"], force: false }
+  - { regex: "XnViewMP-win-x64", creates_path: 'C:\\Program Files\\XnViewMP\\xnviewmp.exe', mode: "exe", args: ["/S", "/verysilent"], force: false }
