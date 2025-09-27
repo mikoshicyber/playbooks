@@ -266,4 +266,4 @@ win_soft_management/
 
 ## Лицензия
 
-MIT
+MIT License
