@@ -1,11 +1,11 @@
 patterns__all:
   - { regex: "7z[\\d.]+-x64.exe", creates_path: 'C:\Program Files\7-Zip\7zFM.exe', mode: "exe", args: ["/S"] }
-  - { regex: "AIMP", mode: "exe", args: ['/AUTO="C:\Users\{{ ansible_user }}\\desktop\AIMP"', "/VERYSILENT"] }
+  - { regex: "AIMP", mode: "exe", args: ['/AUTO="C:\Users\{{ ansible_user }}\desktop\AIMP"', "/VERYSILENT"] }
   - { regex: "audacity-win-[\\d.]+-64bit.exe", creates_path: 'C:\Program Files\Audacity\Audacity.exe', mode: "exe", args: ["/S","/verysilent","/NORESTART"], pre: ["taskkill /im audacity* /f"] }
   - { regex: "blender-.*-windows.amd64-release.msi", mode: "msi", args: ["/quiet", "/norestart"] }
-  - { regex: "calibre-64bit-.*\\.msi", mode: "msi", args: ["/quiet", "/norestart"] }
-  - { regex: "dbeaver", creates_path: 'C:\Users\{{ ansible_user }}\AppData\Local\\dBeaver\\dbeaver.exe', mode: "exe", args: ["/S", "/currentuser"] }
-  - { regex: "draw.io-.*-windows-installer.exe", creates_path: 'C:\Program Files\\draw.io\\draw.io.exe', mode: "exe", args: ["/S","/verysilent","/NORESTART"] }
+  - { regex: "calibre-64bit-.*msi", mode: "msi", args: ["/quiet", "/norestart"] }
+  - { regex: "dbeaver", creates_path: 'C:\Users\{{ ansible_user }}\AppData\Local\dBeaver\dbeaver.exe', mode: "exe", args: ["/S", "/currentuser"] }
+  - { regex: "draw.io-.*-windows-installer.exe", creates_path: 'C:\Program Files\draw.io\draw.io.exe', mode: "exe", args: ["/S","/verysilent","/NORESTART"] }
   - { regex: "ffmpeg-master-latest-win64-gpl.zip", state: "present", mode: "arc", dest: 'C:\Program Files\', force: false, files: ["ffmpeg-master-latest-win64-gpl/bin/ffplay.exe","ffmpeg-master-latest-win64-gpl/bin/ffprobe.exe","ffmpeg-master-latest-win64-gpl/bin/ffmpeg.exe"]}
   - { regex: "Firefox", creates_path: 'C:\Program Files\Mozilla Firefox\firefox.exe', mode: "exe", args: ["/S","/verysilent","/NORESTART"] }
   - { regex: "Freelens-.*-windows-amd64.msi", mode: "msi", args: ["/quiet", "/norestart"], pre: ["taskkill /im Freelens* /f"] }
