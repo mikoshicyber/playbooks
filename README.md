@@ -254,7 +254,9 @@ ansible-playbook playbook.yml -t defender
 Запускайте с тегом `debug` для промежуточных переменных:
 
 ```bash
-ansible-playbook playbook.yml -t debug -e "ansible_verbosity=2"
+IMAGE=quay.io/ansible/awx-ee:latest
+SOURCE_DIR=/mnt/autodownloads
+docker run --rm -it -v "$PWD"/win_soft_management:/work -v "${SOURCE_DIR}":/source -w /work -e "HOME=/work" ${IMAGE} ansible-playbook -i inventory.yaml $@
 ```
 
 Ключевые отладочные переменные:
@@ -266,4 +268,4 @@ ansible-playbook playbook.yml -t debug -e "ansible_verbosity=2"
 
 ## Лицензия
 
-MIT (при необходимости измените под вашу политику).
+MIT
