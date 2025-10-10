@@ -249,6 +249,7 @@
       loop: "{{ planned_items | selectattr('pattern.pre','defined') | list }}"
       loop_control:
         label: "{{ item.pattern.pre }}"
+      when: item.pattern.force | default(false)
       ignore_errors: true
       failed_when: false
       tags: [always]
@@ -269,8 +270,23 @@
                })
              ] }}
       loop: "{{ planned_items | default([]) }}"
+      when: remote_source is defined and (remote_source|length > 0)
       loop_control:
         label: "{{ item.base }}"
+      tags: [always]
+
+    - name: Построить planned_items_prepared
+      ansible.builtin.set_fact:
+        planned_items_prepared: >-
+          {{ (planned_items_prepared | default([])) + [
+               item | combine({
+                 'pkg_path': dest ~ '\\' ~ item.base
+               })
+             ] }}
+      loop: "{{ planned_items | default([]) }}"
+      loop_control:
+        label: "{{ item.base }}"
+      when: not (remote_source is defined and (remote_source|length > 0))
       tags: [always]
 
     - name: Сформировать списки по режимам
@@ -325,16 +341,23 @@
         creates_path: "{{ item.pattern.creates_path | default(omit) }}"
         expected_return_code: "{{ item.pattern.expected_return_code | default([0,3010]) }}"
         wait_for_children: "{{ item.pattern.wait_for_children | default(true) }}"
+        chdir: "{{ dest }}"
       loop: "{{ planned_items_pkg }}"
       register: pkg_results
       when:
         - (item.pattern.state | default('present')) != 'absent'
         - (item.pattern.mode | default('exe')) in ['exe','msi']
       ignore_errors: true
-      failed_when: false
       loop_control:
         label: "{{ item.base }}"
       tags: [always]
+
+    - name: DEBUG pkg_results
+      ansible.builtin.debug:
+        msg: "{{ {'pkg_results': pkg_results } }}"
+      delegate_to: localhost
+      run_once: true
+      tags: [never, debug]
 
     - name: Отобрать PKG с state=absent
       ansible.builtin.set_fact:
@@ -412,10 +435,10 @@
         - pkg_results is defined
         - (item.item.pattern.state | default('present')) != 'absent'
         - item.failed is not defined or not item.failed
-        - (item.rc is defined and (item.rc in [0,3010]))
+        # - (item.rc is defined and (item.rc in [0,3010]))
       tags: [always]
 
-    - name: Создать _installed для успешных установок (pkg)
+    - name: Создать _installed для успешных и уже установленных (pkg)
       ansible.windows.win_file:
         path: "{{ dest }}\\{{ (item.item | default(item)).base }}_installed"
         state: touch
@@ -423,20 +446,20 @@
       when:
         - pkg_results is defined
         - (item.item.pattern.state | default('present')) != 'absent'
-        - item.failed is not defined or not item.failed
-        - (item.rc is defined and (item.rc in [0,3010]))
+        - item is succeeded
       tags: [always]
 
-    - name: Удалить маркер после успешного удаления (pkg)
+    - name: Удалить маркер после успешного удаления (pkg via uninstall_string)
       ansible.windows.win_file:
-        path: "{{ dest }}\\{{ (item.item | default(item)).base }}_installed"
+        path: "{{ dest }}\\{{ item.pkg.base }}_installed"
         state: absent
-      loop: "{{ pkg_results.results | default([]) }}"
+      loop: "{{ uninstall_results.results | default([]) }}"
       when:
-        - pkg_results is defined
-        - (item.item.pattern.state | default('present')) == 'absent'
-        - item.failed is not defined or not item.failed
-        - (item.rc is defined and (item.rc in [0,3010]))
+        - uninstall_results is defined
+        - item.rc is defined
+        - item.rc in [0,3010]
+      loop_control:
+        label: "{{ item.pkg.base }}"
       tags: [always]
 
     - name: Удалить исходник после успешного удаления (pkg)
@@ -449,10 +472,6 @@
         - (item.item.pattern.state | default('present')) == 'absent'
         - item.failed is not defined or not item.failed
         - (item.rc is defined and (item.rc in [0,3010]))
-      tags: [always]
-
-    - ansible.builtin.include_tasks:
-        file: clear_markers.yml
       tags: [always]
 
     - name: Инициализировать success_items
@@ -493,6 +512,7 @@
       loop: "{{ planned_items | selectattr('pattern.post','defined') | list }}"
       loop_control:
         label: "{{ item.pattern.post }}"
+      when: item.pattern.force | default(false) 
       ignore_errors: true
       failed_when: false
       tags: [always]
@@ -500,6 +520,10 @@
     - name: Сформировать финальный список успешных объектов по хосту
       ansible.builtin.set_fact:
         success_items: "{{ ((pkg_success | default([])) + (_arc_success | default([])) + (_files_success | default([]))) | unique }}"
+      tags: [always]
+
+    - ansible.builtin.include_tasks:
+        file: clear_markers.yml
       tags: [always]
 
     - name: DEBUG success_items_final
