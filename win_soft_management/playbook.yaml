@@ -249,7 +249,7 @@
       loop: "{{ planned_items | selectattr('pattern.pre','defined') | list }}"
       loop_control:
         label: "{{ item.pattern.pre }}"
-      when: item.pattern.force | default(false)
+      #when: item.pattern.force | default(false)
       ignore_errors: true
       failed_when: false
       tags: [always]
